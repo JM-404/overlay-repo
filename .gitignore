@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+.env.local
+.env.production
+*.key
+*.pem
+
+# Upstream TEN checkout (don't vendor it; install.sh clones it at deploy time)
+ten-framework/
+ten-framework-main/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+dist/

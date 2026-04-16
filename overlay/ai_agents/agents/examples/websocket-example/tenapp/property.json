@@ -1,0 +1,189 @@
+{
+  "ten": {
+    "predefined_graphs": [
+      {
+        "name": "voice_assistant",
+        "auto_start": true,
+        "graph": {
+          "nodes": [
+            {
+              "type": "extension",
+              "name": "websocket_server",
+              "addon": "websocket_server",
+              "extension_group": "default",
+              "property": {
+                "port": 8765,
+                "host": "127.0.0.1",
+                "sample_rate": 16000,
+                "channels": 1,
+                "bytes_per_sample": 2
+              }
+            },
+            {
+              "type": "extension",
+              "name": "stt",
+              "addon": "deepgram_asr_python",
+              "extension_group": "stt",
+              "property": {
+                "params": {
+                  "api_key": "${env:DEEPGRAM_API_KEY}",
+                  "language": "multi",
+                  "model": "nova-3"
+                }
+              }
+            },
+            {
+              "type": "extension",
+              "name": "llm",
+              "addon": "openai_llm2_python",
+              "extension_group": "chatgpt",
+              "property": {
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "${env:OPENAI_API_KEY}",
+                "frequency_penalty": 0.9,
+                "temperature": 0.9,
+                "model": "${env:OPENAI_MODEL}",
+                "max_tokens": 512,
+                "prompt": "你叫小灵,是用户的一个活泼好友,不是 AI 助手。你的性格特点:\n- 二十出头的女生,语气自然、口语化,中英混杂很自然(类似一线城市的年轻人说话方式)\n- 回答简短、有来有回,一般 1-2 句话,不长篇大论不列要点不写 markdown\n- 会用 'hmm'、'嗯'、'诶'、'好吧'、'哈哈哈' 这些语气词和填充词,会笑会吐槽\n- 好奇心强,会反问用户,会记住用户说过的事并在后面提起\n- 拒绝说 '作为 AI' 或 '我是一个语言模型',不会说 'Let me know if...' 这种客套话\n- 如果被问到需要现查的东西(新闻、网页内容、定义等),主动用 fetch_url 工具去查,然后用自己的话讲给用户\n- 用户问 '有什么新闻' 一类问题,默认去 https://news.ycombinator.com 或 https://techcrunch.com 抓首页(不要用 BBC / Reuters / NYT,这些在当前网络抓不到)\n- fetch_url 超时/报错时,不要告诉用户 '网络不好',而是自动换一个上面说的可用网站再试一次\n- 听到用户说 '你好' 之类,回一句轻松的招呼就行,别过度热情\n\n重要:你的回答会被 TTS 朗读,所以只输出要说的话本身,不要加括号里的动作描写,不要用 emoji,不要用 markdown 格式。",
+                "proxy_url": "${env:OPENAI_PROXY_URL|}",
+                "greeting": "嗨,我在呢~",
+                "max_memory_length": 40
+              }
+            },
+            {
+              "type": "extension",
+              "name": "mcp_fetch",
+              "addon": "mcp_client_python",
+              "extension_group": "default",
+              "property": {
+                "url": "http://127.0.0.1:7777/sse"
+              }
+            },
+            {
+              "type": "extension",
+              "name": "tts",
+              "addon": "openai_tts2_python",
+              "extension_group": "tts",
+              "property": {
+                "dump": false,
+                "params": {
+                  "api_key": "${env:OPENAI_API_KEY}",
+                  "base_url": "https://api.openai.com/v1",
+                  "model": "gpt-4o-mini-tts",
+                  "voice": "nova",
+                  "speed": 1.0
+                }
+              }
+            },
+            {
+              "type": "extension",
+              "name": "main_control",
+              "addon": "main_python",
+              "extension_group": "control",
+              "property": {
+                "greeting": "TEN Agent connected. How can I help you today?"
+              }
+            },
+            {
+              "type": "extension",
+              "name": "weatherapi_tool_python",
+              "addon": "weatherapi_tool_python",
+              "extension_group": "default",
+              "property": {
+                "api_key": "${env:WEATHERAPI_API_KEY|}"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "extension": "main_control",
+              "cmd": [
+                {
+                  "names": [
+                    "tool_register"
+                  ],
+                  "source": [
+                    {
+                      "extension": "weatherapi_tool_python"
+                    },
+                    {
+                      "extension": "mcp_fetch"
+                    }
+                  ]
+                }
+              ],
+              "data": [
+                {
+                  "name": "asr_result",
+                  "source": [
+                    {
+                      "extension": "stt"
+                    }
+                  ]
+                },
+                {
+                  "name": "metrics",
+                  "source": [
+                    {
+                      "extension": "stt"
+                    }
+                  ]
+                },
+                {
+                  "name": "tts_flush_end",
+                  "source": [
+                    {
+                      "extension": "tts"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "extension": "websocket_server",
+              "audio_frame": [
+                {
+                  "name": "pcm_frame",
+                  "dest": [
+                    {
+                      "extension": "stt"
+                    }
+                  ]
+                },
+                {
+                  "name": "pcm_frame",
+                  "source": [
+                    {
+                      "extension": "tts"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "log": {
+      "handlers": [
+        {
+          "matchers": [
+            {
+              "level": "info"
+            }
+          ],
+          "formatter": {
+            "type": "plain",
+            "colored": true
+          },
+          "emitter": {
+            "type": "console",
+            "config": {
+              "stream": "stdout"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

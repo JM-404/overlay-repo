@@ -1,0 +1,36 @@
+# Caddy reverse proxy for Xiaoling voice assistant.
+#
+# Replace xiaoling.example.com with your own subdomain (must already resolve
+# to this server's public IP and — for 国内 ECS — be filed with 备案 if you
+# want port 443).
+#
+# Install:
+#   sudo apt install -y caddy
+#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Caddy will automatically obtain and renew a Let's Encrypt certificate.
+# WebSocket upgrade (/ws/*) is handled transparently by reverse_proxy.
+
+xiaoling.example.com {
+    encode gzip
+
+    # Frontend (Next.js). The frontend itself proxies /api/agents -> :8080
+    # and /ws/{port} -> ws://127.0.0.1:{port}, so we just need to expose :3000.
+    reverse_proxy localhost:3000
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        # Microphone is ONLY granted over HTTPS — that's the whole point
+        # of running Caddy here.
+        Permissions-Policy "microphone=(self)"
+    }
+
+    log {
+        output file /var/log/caddy/xiaoling.log
+        format console
+    }
+}
