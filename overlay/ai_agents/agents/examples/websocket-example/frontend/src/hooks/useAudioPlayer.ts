@@ -9,6 +9,7 @@ import type { WebSocketManager } from "@/manager/websocket";
 
 export function useAudioPlayer(wsManager: WebSocketManager | null) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
 
   useEffect(() => {
@@ -16,7 +17,9 @@ export function useAudioPlayer(wsManager: WebSocketManager | null) {
     const player = new AudioPlayer(DEFAULT_AUDIO_CONFIG);
     playerRef.current = player;
 
-    player.initialize();
+    player.initialize().then(() => {
+      setAnalyser(player.getAnalyser());
+    });
 
     // Listen for audio messages from WebSocket
     const unsubscribe = wsManager?.onAudio(async (message) => {
@@ -50,5 +53,7 @@ export function useAudioPlayer(wsManager: WebSocketManager | null) {
   return {
     isPlaying,
     setVolume,
+    /** AnalyserNode tapping the TTS output for lip-sync/visualizers. */
+    analyser,
   };
 }

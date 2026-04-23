@@ -16,6 +16,42 @@ export const DEFAULT_AUDIO_CONFIG: AudioConfig = {
 };
 
 /**
+ * Downsample Float32 audio from `srcRate` to `dstRate` using a simple average
+ * box-filter. Good enough for speech recognition (Deepgram doesn't need
+ * audiophile quality). Upsampling is not supported — returns input unchanged
+ * if srcRate <= dstRate.
+ */
+export function downsampleFloat32(
+  input: Float32Array,
+  srcRate: number,
+  dstRate: number,
+): Float32Array {
+  if (srcRate === dstRate || srcRate <= dstRate) return input;
+  const ratio = srcRate / dstRate;
+  const outLength = Math.floor(input.length / ratio);
+  const output = new Float32Array(outLength);
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+  while (offsetResult < outLength) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accum = 0;
+    let count = 0;
+    for (
+      let i = offsetBuffer;
+      i < nextOffsetBuffer && i < input.length;
+      i++
+    ) {
+      accum += input[i];
+      count++;
+    }
+    output[offsetResult] = count > 0 ? accum / count : 0;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return output;
+}
+
+/**
  * Convert Float32Array PCM data to Int16Array
  */
 export function float32ToInt16(buffer: Float32Array): Int16Array {
@@ -76,8 +112,14 @@ export function int16ToFloat32(int16: Int16Array): Float32Array {
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
   private gainNode: GainNode | null = null;
-  private audioQueue: { data: Float32Array; sampleRate: number }[] = [];
-  private isPlaying = false;
+  private analyserNode: AnalyserNode | null = null;
+  /**
+   * AudioContext timestamp when the next chunk should start. When a chunk
+   * arrives we schedule it at `max(currentTime, nextPlayTime)` so consecutive
+   * chunks play gap-free even if they come from a stream-of-small-pieces TTS
+   * like Minimax (~57ms/chunk).
+   */
+  private nextPlayTime = 0;
 
   constructor(private config: AudioConfig = DEFAULT_AUDIO_CONFIG) {}
 
@@ -87,6 +129,23 @@ export class AudioPlayer {
     });
     this.gainNode = this.audioContext.createGain();
     this.gainNode.connect(this.audioContext.destination);
+
+    // Tap the same audio graph with an AnalyserNode so consumers (e.g.
+    // Live2D avatar lip-sync) can read the RMS level without the sample-rate
+    // mismatch issues that a MediaStreamAudioDestinationNode would introduce.
+    this.analyserNode = this.audioContext.createAnalyser();
+    this.analyserNode.fftSize = 512;
+    this.gainNode.connect(this.analyserNode);
+  }
+
+  /** Access the analyser tapping the TTS output for lip-sync, visualizers etc. */
+  getAnalyser(): AnalyserNode | null {
+    return this.analyserNode;
+  }
+
+  /** Expose audio context so callers can react to suspended state etc. */
+  getAudioContext(): AudioContext | null {
+    return this.audioContext;
   }
 
   async playBase64Audio(
@@ -96,64 +155,45 @@ export class AudioPlayer {
     if (!this.audioContext || !this.gainNode) {
       await this.initialize();
     }
+    // Browsers auto-suspend AudioContexts until a user gesture. Recording
+    // already counts as one, but just in case:
+    if (this.audioContext?.state === "suspended") {
+      try {
+        await this.audioContext.resume();
+      } catch {}
+    }
 
     const int16 = base64ToInt16(base64Audio);
     const float32 = int16ToFloat32(int16);
 
-    this.audioQueue.push({
-      data: float32,
-      sampleRate: sampleRate ?? this.config.sampleRate,
-    });
-
-    if (!this.isPlaying) {
-      await this.playQueue();
-    }
+    this.schedulePCM(float32, sampleRate ?? this.config.sampleRate);
   }
 
-  private async playQueue(): Promise<void> {
+  /**
+   * Schedule a PCM chunk to play immediately after the previously scheduled
+   * one, with no gap. This replaces the old queue-and-await-onended approach
+   * that left 10-50ms JS event-loop gaps between chunks (→ choppy playback
+   * with fine-grained TTS like Minimax).
+   */
+  private schedulePCM(pcmData: Float32Array, sampleRate: number): void {
     if (!this.audioContext || !this.gainNode) return;
 
-    this.isPlaying = true;
+    const audioBuffer = this.audioContext.createBuffer(
+      this.config.channels,
+      pcmData.length,
+      sampleRate,
+    );
+    audioBuffer.getChannelData(0).set(pcmData);
 
-    while (this.audioQueue.length > 0) {
-      const chunk = this.audioQueue.shift();
-      if (!chunk) break;
+    const source = this.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.gainNode);
 
-      await this.playPCM(chunk.data, chunk.sampleRate);
-    }
-
-    this.isPlaying = false;
-  }
-
-  private async playPCM(
-    pcmData: Float32Array,
-    sampleRate: number,
-  ): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.audioContext || !this.gainNode) {
-        resolve();
-        return;
-      }
-
-      // Use the ACTUAL sample rate the audio was encoded at. Web Audio will
-      // automatically resample to the AudioContext's output rate, avoiding
-      // "sloth mode" playback when TTS returns 24kHz PCM but the AudioContext
-      // is running at 16kHz.
-      const audioBuffer = this.audioContext.createBuffer(
-        this.config.channels,
-        pcmData.length,
-        sampleRate,
-      );
-
-      audioBuffer.getChannelData(0).set(pcmData);
-
-      const source = this.audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(this.gainNode);
-
-      source.onended = () => resolve();
-      source.start();
-    });
+    const now = this.audioContext.currentTime;
+    // Clamp: if we've fallen behind (e.g. context was paused), restart from now.
+    const startTime = Math.max(now, this.nextPlayTime);
+    source.start(startTime);
+    this.nextPlayTime = startTime + audioBuffer.duration;
   }
 
   setVolume(volume: number): void {
@@ -163,8 +203,7 @@ export class AudioPlayer {
   }
 
   destroy(): void {
-    this.audioQueue = [];
-    this.isPlaying = false;
+    this.nextPlayTime = 0;
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -224,9 +263,23 @@ export class AudioRecorder {
     // Create processor node (buffer size 4096)
     this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
 
+    // Browsers (especially macOS Chrome) often ignore the 16000Hz request
+    // and run the AudioContext at 44100/48000 instead. The ScriptProcessor
+    // then delivers samples at that native rate. Deepgram is configured for
+    // exactly 16000Hz, so we must downsample client-side before sending.
+    const TARGET_RATE = this.config.sampleRate;
+    const actualRate = this.audioContext.sampleRate;
+    console.log(
+      `[AudioRecorder] AudioContext rate=${actualRate}, target=${TARGET_RATE}, resampling=${actualRate !== TARGET_RATE}`,
+    );
+
     this.processorNode.onaudioprocess = (event) => {
       const inputData = event.inputBuffer.getChannelData(0);
-      const base64 = pcmToBase64(inputData);
+      const resampled =
+        actualRate === TARGET_RATE
+          ? inputData
+          : downsampleFloat32(inputData, actualRate, TARGET_RATE);
+      const base64 = pcmToBase64(resampled);
 
       if (this.onDataCallback) {
         this.onDataCallback(base64);
