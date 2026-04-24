@@ -16,10 +16,16 @@ LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 rsync -avz --progress \
   --exclude '.git' \
   --exclude '.env' \
+  --exclude '.env.*' \
   --exclude 'node_modules' \
   --exclude '.next' \
   --exclude '__pycache__' \
   --exclude '.DS_Store' \
+  --exclude '.memory' \
+  `# Files committed as sanitized placeholders; the server keeps its own` \
+  `# hardcoded-secret versions. Overwriting them would break prod.` \
+  --exclude 'overlay/ai_agents/agents/examples/websocket-example/tenapp/property.json' \
+  --exclude 'overlay/ai_agents/agents/examples/websocket-example/context_mcp_server.py' \
   "$LOCAL_DIR/" "${REMOTE}:/opt/xiaoling/xiaoling-deploy/"
 
 echo ""

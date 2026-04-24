@@ -26,7 +26,9 @@ Browser mic  ─►  WebSocket (same-origin /ws/{port} via Caddy)
   │           ▼                             │
   │    Minimax WebSocket TTS (zh 甜美女声)   │
   │                                         │
-  │    + MCP fetch tool (FastMCP SSE :7777) │
+  │    + MCP fetch   (FastMCP SSE :7777)    │
+  │    + MCP context (FastMCP SSE :7778)    │  time / lunar / weather
+  │    + MCP memory  (FastMCP SSE :7779)    │  per-user SQLite recall/remember
   │    + main_python (orchestrator)         │
   └─────────────────────────────────────────┘
                     │
@@ -80,7 +82,9 @@ Base framework: [TEN Framework](https://github.com/TEN-framework/TEN-Agent)
 | 3000 | Next.js frontend | Internal only |
 | 8080 | TEN API server (Go) | Internal only |
 | 8000-9000 | TEN workers (websocket_server per session) | via Caddy/frontend proxy |
-| 7777 | FastMCP fetch server | Internal only |
+| 7777 | FastMCP fetch server (web pages) | Internal only |
+| 7778 | FastMCP context server (time/lunar/weather) | Internal only |
+| 7779 | FastMCP memory server (per-user SQLite) | Internal only |
 
 ---
 
@@ -104,9 +108,14 @@ Base framework: [TEN Framework](https://github.com/TEN-framework/TEN-Agent)
 |---|---|
 | `tenapp/property.json` | Graph definition + vendor configs |
 | `tenapp/manifest.json` | Extension deps (added `mcp_client_python`) |
-| `fetch_mcp_server.py` | Local FastMCP SSE server with `fetch_url` tool |
+| `fetch_mcp_server.py` | Local FastMCP SSE server with `fetch_url` tool (port 7777) |
+| `context_mcp_server.py` | Local FastMCP SSE server: `get_current_time` / `get_lunar_date` / `get_weather` (port 7778, 和风天气 hardcoded) |
+| `memory_mcp_server.py` | Local FastMCP SSE server: `recall(uid)` / `remember(uid, content)` — SQLite at `./.memory/memory.db` (port 7779) |
 | `frontend/src/lib/audioUtils.ts` | PCM record/play + gap-free scheduling + downsample |
+| `frontend/src/lib/userIdentity.ts` | Anonymous per-browser UUID in localStorage (`xiaoling_uid`) |
+| `frontend/src/lib/persona.ts` | `PERSONA_PROMPT_BASE` + `buildPromptForUser(uid)` — source of truth for prompt (mirrored manually in property.json) |
 | `frontend/src/hooks/useAudioPlayer.ts` | Exposes `analyser` for avatar sync |
+| `frontend/src/hooks/useAgentLifecycle.ts` | `/start` call injects `properties.llm.prompt` override with UID marker |
 | `frontend/src/components/Agent/AvatarLive2D.tsx` | Live2D component (drives mouth param) |
 | `frontend/src/components/Agent/WebSocketClient.tsx` | Layout: 3 columns (Connect\|Avatar\|Chat) |
 | `frontend/src/app/layout.tsx` | Loads `/lib/live2dcubismcore.min.js` |
@@ -127,6 +136,8 @@ Base framework: [TEN Framework](https://github.com/TEN-framework/TEN-Agent)
 | TTS | Minimax WebSocket | hardcoded in server's `property.json` (Minimax `sk-api-...`) | model `speech-02-turbo`, voice `female-tianmei` |
 | Avatar | Live2D Kei (self-hosted) | n/a | Assets in `/public/live2d/` |
 | Web fetch tool | FastMCP server on :7777 | n/a | `fetch_url(url)` — use HN/TechCrunch/Wikipedia/Zhihu |
+| Context tools | FastMCP server on :7778 | `QWEATHER_HOST` + `QWEATHER_KEY` env vars (set via server-only `/app/xiaoling-secrets.env`, NOT committed) | `get_current_time` / `get_lunar_date` (via `lunar-python` 1.4.8) / `get_weather` (和风天气 v7, 12 cities mapped, default 北京) |
+| Memory tools | FastMCP server on :7779 | n/a (local SQLite) | `recall(uid)` / `remember(uid, content)` — DB at `/app/agents/examples/websocket-example/.memory/memory.db` (bind-mounted, survives container restart). UID provided by frontend via localStorage + `/start` prompt override |
 
 > Actual key values live only on the server at
 > `/opt/xiaoling/ten-framework-main/ai_agents/agents/examples/websocket-example/tenapp/property.json`.
@@ -190,9 +201,17 @@ cd /Users/jm/Personal\ Project/Company/xiaoling-deploy
 Next.js + Turbopack hot-reloads `.ts`/`.tsx` edits automatically. property.json
 needs api-server restart.
 
-### Start MCP fetch server after reboot
+### Start MCP servers after reboot (3 of them)
 ```bash
-docker exec -d ten_agent_dev bash -lc "cd /app/agents/examples/websocket-example && python3 fetch_mcp_server.py > /tmp/mcp.log 2>&1"
+docker exec -d ten_agent_dev bash -lc "cd /app/agents/examples/websocket-example && python3 fetch_mcp_server.py   > /tmp/mcp.log 2>&1"
+docker exec -d ten_agent_dev bash -lc "cd /app/agents/examples/websocket-example && python3 context_mcp_server.py > /tmp/context_mcp.log 2>&1"
+docker exec -d ten_agent_dev bash -lc "cd /app/agents/examples/websocket-example && python3 memory_mcp_server.py  > /tmp/memory_mcp.log 2>&1"
+# Verify all three:
+docker exec ten_agent_dev bash -lc '
+  for p in 7777 7778 7779; do
+    curl -s -o /dev/null -w "MCP :$p %{http_code}\n" --max-time 2 http://127.0.0.1:$p/sse
+  done
+'
 ```
 
 ### If `kill -9 $PID` via ssh returns exit 137
@@ -327,20 +346,75 @@ out.
 **Don't retry this**. Use Live2D (current solution) — self-hosted assets, no
 external dependency, works everywhere.
 
+### #16 — Local overlay vs server property.json silently drift
+**Symptom**: Server runs fine with Aliyun/DeepSeek/Minimax, but local overlay
+has old Deepgram/OpenAI/ElevenLabs config. Next `rsync` could nuke prod.
+
+**Cause**: Fixes for Gotchas #12 / #13 (vendor switches) were applied directly
+on the server via `docker exec` edits, **not** synced back to the overlay repo.
+
+**Fix**: Before ANY overlay push that touches `property.json`, **pull server
+state first** as source of truth, then edit locally, then push:
+
+```bash
+ssh -i ~/.ssh/xiaoling root@47.95.119.182 \
+  "docker exec ten_agent_dev cat /app/agents/examples/websocket-example/tenapp/property.json" \
+  > overlay/ai_agents/agents/examples/websocket-example/tenapp/property.json
+```
+
+Long-term: stop editing property.json on the server; make the overlay the
+authoritative source.
+
+### #17 — TEN `/start` supports per-session property override (positive — use this!)
+**Mechanism**: The API server's `/start` (or `/api/agents/start`) endpoint
+accepts a `properties` object that **deep-merges at the field level** into
+the graph's property.json before launching the worker:
+
+```json
+POST /api/agents/start
+{
+  "request_id": "...",
+  "channel_name": "...",
+  "graph_name": "voice_assistant",
+  "properties": {
+    "llm":              { "prompt": "…full prompt including [CURRENT_USER_ID=xxx]…" },
+    "websocket_server": { "port": 8991 }
+  }
+}
+```
+
+**Verified behavior**: The generated session file at
+`/tmp/ten_agent/property-<channel>-<ts>.json` contains the override. Fields
+NOT included in the override (e.g., `llm.base_url`, `llm.api_key`,
+`llm.temperature`) are preserved from the base property.json. Other
+extensions are untouched.
+
+**We use this for**: per-browser anonymous user IDs — the frontend generates
+`localStorage['xiaoling_uid']` once, then injects
+`[CURRENT_USER_ID=<uid>]` into the LLM prompt at `/start` time so memory
+tools can scope recall/remember per user without login. See
+`frontend/src/hooks/useAgentLifecycle.ts` and `frontend/src/lib/persona.ts`.
+
+**Gotcha inside a gotcha**: The override REPLACES the whole field value, so
+you can't send just a suffix — you must send the full prompt. Base persona
+is duplicated between `frontend/src/lib/persona.ts` (live source) and
+`tenapp/property.json` (fallback for direct /start calls). Keep in sync
+manually until M2.3 centralizes.
+
 ---
 
 ## 7. Known short-term issues / TODOs
 
-- [ ] Some services (MCP fetch) need manual restart after server reboot — not
-      auto-started. Could wrap in systemd unit on host.
+- [ ] All 3 MCP servers (fetch/context/memory) need manual restart after
+      server reboot — not auto-started. Could wrap in systemd units on host.
 - [ ] `.env` placeholder values need to stay 32-char AGORA_APP_ID for the Go
       server validation. Proper fix would be patching `/app/server/main.go`
       line 53.
 - [ ] Frontend has no text-input fallback when mic permission is denied.
-- [ ] No persistent memory across sessions (system prompt only has in-session
-      history via `max_memory_length: 40`). Could integrate `memU` /
-      `EverMemOS` extensions later — see TEN's `voice-assistant-with-memU`
-      example.
+- [x] ~~No persistent memory across sessions~~ — done 2026-04-24: per-user
+      anonymous memory via `memory_mcp_server.py` + SQLite + frontend
+      `localStorage` UUID. Still single-device only; cross-device sync needs
+      phone/email binding (Post-MVP).
 - [ ] Kei avatar is one of the TEN framework's public demo models. If user
       wants a branded avatar, create custom Cubism 4 model and drop into
       `public/live2d/<name>/`.
@@ -385,11 +459,17 @@ curl -s -o /dev/null -w "https://vmodel.cc: %{http_code}\n" https://vmodel.cc/
 # Services inside container
 ssh -i ~/.ssh/xiaoling root@47.95.119.182 "
   docker exec ten_agent_dev bash -lc '
-    curl -s -o /dev/null -w \"api: %{http_code}\n\" http://localhost:8080/health
-    curl -s -o /dev/null -w \"frontend: %{http_code}\n\" http://localhost:3000
-    curl -s -o /dev/null -w \"mcp: %{http_code}\n\" --max-time 2 http://127.0.0.1:7777/sse
+    curl -s -o /dev/null -w \"api:         %{http_code}\n\" http://localhost:8080/health
+    curl -s -o /dev/null -w \"frontend:    %{http_code}\n\" http://localhost:3000
+    curl -s -o /dev/null -w \"mcp_fetch:   %{http_code}\n\" --max-time 2 http://127.0.0.1:7777/sse
+    curl -s -o /dev/null -w \"mcp_context: %{http_code}\n\" --max-time 2 http://127.0.0.1:7778/sse
+    curl -s -o /dev/null -w \"mcp_memory:  %{http_code}\n\" --max-time 2 http://127.0.0.1:7779/sse
   '
 "
+
+# Memory DB sanity
+ssh -i ~/.ssh/xiaoling root@47.95.119.182 \
+  "docker exec ten_agent_dev sqlite3 /app/agents/examples/websocket-example/.memory/memory.db 'SELECT uid, count(*) FROM memories GROUP BY uid;'"
 ```
 
 Expect: 200, 200, 200, 200.
