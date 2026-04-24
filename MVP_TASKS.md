@@ -1,8 +1,8 @@
 # 小灵 MVP 任务清单
 
-**更新时间**: 2026-04-24
+**更新时间**: 2026-04-25
 **MVP 定义**: 匿名记忆 + 主动陪伴 Demo + 角色可切换 + 响应式 UI,网页形态(PWA)发布,**不做桌面端**
-**预计总工期**: ~2 周
+**预计总工期**: ~2 周 · 剩余 ~7-10 天
 
 ---
 
@@ -23,15 +23,19 @@
 
 ## 1. 里程碑 M1:基础能力升级(5-7 天)
 
-### 1.1 UI 改版 — 3-4 天
-- [ ] 竖屏(手机浏览器):对话区默认占屏幕 1/3,点击自动展开
-- [ ] 横屏(网页):左右分栏布局(角色 + 对话)
-- [ ] 右上角设置入口(drawer/panel 骨架,先空壳)
-- [ ] 窗口 resize 时 Live2D canvas 自动 `app.renderer.resize()`
-- [ ] 响应式断点用 `useMediaQuery` 判定 orientation
+### 1.1 UI 改版 — ⚠️ 部分完成(横屏 ✅ / 竖屏 ❌)
+- [x] 横屏(网页)重构:**左上数字人 + 左下用户摄像头 + 中间波形条 + 右侧聊天** 两栏布局
+- [x] 顶部薄工具栏:标题 + 连接状态 + 模型下拉 + Start/Stop + 麦克风开关
+- [x] 聊天卡片底部文字输入框(回车/按钮发送)
+- [x] 新增 `UserCamera.tsx`(本地预览,`getUserMedia`,不上传)
+- [ ] **竖屏(手机浏览器)**:对话区默认占屏幕 1/3,点击自动展开 ← 还没做
+- [ ] 响应式断点用 `useMediaQuery` 判定 orientation ← 跟竖屏一起做
 - [ ] 过渡动画用 `framer-motion` 的 `AnimatePresence`
+- [ ] 窗口 resize 时 Live2D canvas 自动 `app.renderer.resize()`(M3.2 一起处理)
+- [ ] 右上角设置入口完整 drawer(现在只是模型下拉,完整版见 M2.3)
 
-**依赖**: 无
+**依赖**: 无  
+**剩余工期**: 1-2 天(只剩竖屏)
 
 ### 1.2 匿名 Memory 系统 — ✅ 2026-04-24 上线(含多用户)
 - [x] 前端 `frontend/src/lib/userIdentity.ts`:首次访问 `crypto.randomUUID()` 生成,写入 `localStorage['xiaoling_uid']`;隐身模式 fallback 到会话级临时 UID
@@ -90,24 +94,32 @@
 
 **依赖**: M1.2 memory + M1.3 context MCP 跑通
 
-### 2.2 多模型切换 — 1 天
-- [ ] `property.json` 的 `predefined_graphs` 改为多 graph:
-  - [ ] `xiaoling_deepseek`(现有,默认)
-  - [ ] `xiaoling_qwen`(通义,需 `openai_llm2_python` 扩展 + DashScope 兼容 URL)
-  - [ ] `xiaoling_gpt`(可选)
-- [ ] 前端调 `/start` 时带 `graph_name` 参数
-- [ ] 切换时优雅关闭旧 session → 起新 session
+### 2.2 多模型切换 — ✅ 2026-04-25 上线
+**换方案了**:不走多 graph,走 **gpt.ge 中转网关**(一个 base_url 支持三家模型,只改 `model` 字段)
+- [x] 服务器 `property.json` LLM 换成 `https://api.gpt.ge/v1` + gpt.ge API key(替换原 DeepSeek 直连)
+- [x] 新建 `frontend/src/lib/availableModels.ts` 8 个模型:
+  - Claude Sonnet 4.6(默认) / Claude Haiku 4.5
+  - GPT-5.4 / GPT-5.1 / GPT-4.1 / GPT-4o
+  - Gemini 2.5 Pro / Gemini 2.5 Flash
+- [x] 前端顶部工具栏模型下拉,选择写 localStorage `xiaoling_model`,下次 Start 生效(运行时灰掉防误切)
+- [x] `useAgentLifecycle.ts` 的 `/start` 调用加 `properties.llm.model` 覆盖
+- [x] API key 只硬编码在服务器 property.json,前端 JS 不暴露
+- [x] **修了 Claude/gpt.ge 的 tool-call 兼容 bug**:`openai_llm2_python` 扩展的 `json.loads("")` 对无参数工具炸,patch 让空字符串等同 `{}`(见 Gotcha #19)
 
-**依赖**: 目标 API Keys 到位
+**依赖**: gpt.ge API key ✅  
+**附带收益**: Claude 的 tool-use 纪律比 DeepSeek 好,之前"手滑多查""我来看看时间"这类话痨问题显著减轻
 
-### 2.3 设置面板填充 — 1 天
-- [ ] 切换模型(对接 2.2)
+### 2.3 设置面板填充 — ⚠️ 部分完成
+- [x] 切换模型 — 已做,作为顶部下拉而非侧边 drawer
+- [x] 声音开关 — 已做(麦克风 toggle)
+- [ ] 完整侧边 drawer(取代顶部散控件)
 - [ ] 自定义背景:预设 4-6 张 + 支持上传本地图
-- [ ] 切换角色下拉(对接 M3 的 Persona 结构,先占位)
-- [ ] 声音开关 / 音量条
-- [ ] 配置持久化(存 `localStorage['xiaoling_settings']`)
+- [ ] 切换角色下拉(对接 M3.2 Persona 结构,先占位)
+- [ ] 音量条(目前是音量 toggle,非渐变)
+- [ ] 配置持久化(模型已 localStorage,其他待加)
 
-**依赖**: 2.2
+**依赖**: 2.2 ✅  
+**剩余工期**: 0.5-1 天
 
 ---
 
@@ -173,26 +185,32 @@
 - [ ] 手机号绑定 → 跨设备同步记忆
 - [ ] 微信小程序版本
 - [ ] iOS 原生 APP
+- [x] ~~文本输入 fallback(麦克风拒绝权限时)~~ — 2026-04-25 已完成(详见 M1.1)
 
 ### 技术升级
 - [ ] Memory 向量检索(sqlite-vss / Chroma)
 - [ ] 评估升级到 hermes-agent 的 Honcho 用户模型
 - [ ] 评估接入 openclaw 做多渠道触达
-- [ ] 文本输入 fallback(麦克风拒绝权限时)
 - [ ] AGORA_APP_ID 改造(patch `/app/server/main.go` line 53)
 - [ ] systemd unit 让所有 MCP / API / Frontend 开机自启
+- [ ] **容器重建保护**:`install.sh` 加步骤自动把 `overlay/ten_packages_patches/*` 恢复到 `/app/agents/ten_packages/` 对应位置,否则重建就丢 websocket_server 文本输入 + Claude 兼容两个关键 patch
+- [ ] 主动陪伴:`parallel_tool_calls` 支持(目前 Claude 被迫走多轮 tool 循环,响应偏慢)
 
 ---
 
-## 5. 工期总览
+## 5. 工期总览 & 剩余任务(按优先级)
 
-| 里程碑 | 内容 | 工期 |
-|---|---|---|
-| M0 前置 | SSH / Keys / 老板确认 | 0.5 天 |
-| M1 基础能力 | UI + Memory + Context + PWA | 5-7 天 |
-| M2 陪伴 Demo | Demo 按钮 + 多模型 + 设置面板 | 2-3 天 |
-| M3 角色化 | Live2D 规格 + 切换接口 + 接入 | 2-3 天 + 等模型 |
-| **MVP 合计** | | **~2 周** |
+| # | 任务 | 工期 | 备注 |
+|---|---|---|---|
+| 1 | **M3.1 Live2D 规格文档** | 0.5 天 | 最先做,美术好并行开工 |
+| 2 | **M2.1 主动陪伴 Demo 按钮** | 1-2 天 | 老板要 demo |
+| 3 | **M1.4 PWA 壳** | 0.5 天 | 性价比最高 |
+| 4 | **M1.1 竖屏布局**(手机) | 1-2 天 | 横屏已做 |
+| 5 | **M2.3 设置面板扩展** | 0.5-1 天 | 模型切换已做,加背景/角色/音量 |
+| 6 | **M3.2 Live2D 角色切换接口** | 1-2 天 | 等 #1 敲定后开始 |
+| 7 | **M3.3 接入公司 Live2D** | 1 天 | 等美术交付 |
+
+**剩余总工期**: ~6-9 天(部分可并行)
 
 ---
 
@@ -206,6 +224,9 @@
 | 2026-04-24 | 短期不融入 hermes-agent,自己搭简化版 | 1 周 vs 1 个月,先验证产品形态,陪伴感上限瓶颈其实在 persona/数据,不在 agent 框架 |
 | 2026-04-24 | Live2D 自研形象由公司美术出(Cubism 4) | 品牌化需要;接入层做成"丢文件即可切换" |
 | 2026-04-24 | MCP 优先做 memory + context(time/weather/lunar) | 陪伴感性价比最高;日历/搜索/新闻推 Post-MVP |
+| 2026-04-25 | LLM 改走 gpt.ge 中转网关,不搞多 graph | 一个 base_url 支持 Claude/OpenAI/Gemini,只需改 `model` 字段;Claude tool-use 纪律更好,捎带修复之前的"手滑多查"问题 |
+| 2026-04-25 | 文本输入路径:patch `websocket_server` 扩展接受 `{"text":"..."}`,转成合成 `asr_result` 事件 | MVP 不想再造一条通道;复用现有 ASR→main_control→LLM→TTS 管道。代价:维护两个 ten_packages 小 fork(记入 Gotcha #18/#19) |
+| 2026-04-25 | Prompt 约束收窄(no-emoji + 静默调工具 + 不重复调工具 + 不为自己道歉) | 从日志证据来看针对 DeepSeek 的话痨 / 重复 tool_call 问题;切 Claude 后这些规则更多是保险 |
 
 ---
 

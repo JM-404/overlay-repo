@@ -1,20 +1,24 @@
 "use client";
 
-import { AlertCircle, Loader2, Play, Square, Wifi } from "lucide-react";
+import { AlertCircle, Loader2, Play, Send, Square } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+  AVAILABLE_MODELS,
+  getSelectedModel,
+  setSelectedModel,
+} from "@/lib/availableModels";
 import { AudioControls } from "@/components/Agent/AudioControls";
 import { AudioVisualizer } from "@/components/Agent/AudioVisualizer";
 import { AvatarLive2D } from "@/components/Agent/AvatarLive2D";
 import { ChatHistory } from "@/components/Agent/ChatHistory";
 import { ConnectionStatus } from "@/components/Agent/ConnectionStatus";
 import { TranscriptionDisplay } from "@/components/Agent/TranscriptionDisplay";
+import { UserCamera } from "@/components/Agent/UserCamera";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -29,13 +33,17 @@ export function WebSocketClient() {
   const [port, setPort] = useState<number | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
 
-  // Initialize port on mount (client-side only)
   useEffect(() => {
-    const wsPort = getOrGeneratePort();
-    setPort(wsPort);
+    setPort(getOrGeneratePort());
   }, []);
 
-  // Agent lifecycle management
+  // Model selector — persists to localStorage, takes effect on next Start.
+  const [modelId, setModelId] = useState<string>(() => getSelectedModel());
+  const handleModelChange = (id: string) => {
+    setModelId(id);
+    setSelectedModel(id);
+  };
+
   const {
     state: agentState,
     startAgent,
@@ -43,10 +51,8 @@ export function WebSocketClient() {
     reset,
     isStarting,
     isRunning,
-    hasError,
   } = useAgentLifecycle();
 
-  // WebSocket connection (don't auto-connect, but allow unlimited retries)
   const {
     wsManager,
     connect: connectWebSocket,
@@ -54,238 +60,227 @@ export function WebSocketClient() {
   } = useWebSocket({
     url: port ? getWebSocketUrl(port) : "ws://localhost:8765",
     autoConnect: false,
-    maxReconnectAttempts: -1, // Unlimited retries
-    reconnectInterval: 3000, // 3 seconds between retries
+    maxReconnectAttempts: -1,
+    reconnectInterval: 3000,
   });
 
-  // Initialize audio recorder
   const { isRecording, startRecording, stopRecording, getMediaStream } =
     useAudioRecorder(wsManager);
-
-  // Initialize audio player; expose the TTS AnalyserNode for avatar lip-sync
   const { analyser: ttsAnalyser } = useAudioPlayer(wsManager);
-
-  // Get store state
   const { wsConnected } = useAgentStore();
 
-  // Auto-start recording on mount
   useEffect(() => {
-    const autoStart = async () => {
-      try {
-        await startRecording();
-      } catch (err) {
-        console.error("Failed to auto-start recording:", err);
-      }
-    };
-    autoStart();
+    startRecording().catch((err) =>
+      console.error("Failed to auto-start recording:", err),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startRecording]); // Only run on mount
+  }, [startRecording]);
 
-  // Handle start agent
   const handleStartAgent = async () => {
     if (!port) {
       setInitError("Port not available");
       return;
     }
-
     setInitError(null);
     try {
       await startAgent({ port });
-      console.log(`Agent started successfully on port ${port}`);
-      // Wait a bit for the WebSocket server to be ready before connecting
-      setTimeout(() => {
-        console.log(`Attempting WebSocket connection to port ${port}...`);
-        connectWebSocket();
-      }, 2000); // 2 second delay to allow server to start
+      setTimeout(() => connectWebSocket(), 2000);
     } catch (error) {
-      console.error("Failed to start agent:", error);
       setInitError(
-        error instanceof Error ? error.message : "Failed to start agent"
+        error instanceof Error ? error.message : "Failed to start agent",
       );
     }
   };
 
-  // Handle stop agent
+  // Text-input handling. Sends {"text": "..."} over the same WebSocket the
+  // mic uses; server-side websocket_server patch turns it into an asr_result
+  // event so the rest of the pipeline is unchanged.
+  const [textInput, setTextInput] = useState("");
+  const sendTextMessage = () => {
+    const trimmed = textInput.trim();
+    if (!trimmed || !wsConnected || !wsManager) return;
+    try {
+      wsManager.send({ text: trimmed });
+      setTextInput("");
+    } catch (err) {
+      console.error("Failed to send text message:", err);
+    }
+  };
+
   const handleStopAgent = async () => {
     try {
-      // Disconnect WebSocket first
       disconnectWebSocket();
-      // Stop the agent
       await stopAgent();
-      // Reset error state so user can try again
       setInitError(null);
       reset();
-      console.log("Agent stopped successfully");
-    } catch (error) {
-      console.error("Failed to stop agent:", error);
-      // Continue anyway - best effort
+    } catch {
       setInitError(null);
       reset();
     }
   };
 
-  const handleStartRecording = async () => {
-    await startRecording();
-  };
-
-  const handleStopRecording = () => {
-    stopRecording();
-  };
-
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto max-w-6xl px-4 py-6">
-        <div className="space-y-6">
-          {/* Header */}
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-2">
-              <h1 className="font-bold text-3xl text-foreground tracking-tight">
-                WebSocket Voice Assistant
-              </h1>
-              <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-sm">
-                <span>Real-time voice interaction with AI assistant</span>
-                {port && (
-                  <Badge variant="secondary" className="font-normal">
-                    Port: {port}
-                  </Badge>
-                )}
-              </div>
+    <div className="h-screen w-screen overflow-hidden bg-background">
+      <div className="flex h-full flex-col">
+        {/* Top toolbar: title + connection status + start/stop + mic */}
+        <div className="flex shrink-0 items-center gap-3 border-b border-border/40 px-4 py-3">
+          <h1 className="font-semibold text-foreground text-lg tracking-tight">
+            小灵
+          </h1>
+          <ConnectionStatus />
+          <div className="ml-auto flex items-center gap-2">
+            {/* Model selector — greyed out while running; change takes effect on next Start. */}
+            <select
+              value={modelId}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={isRunning || isStarting}
+              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+              title={
+                isRunning
+                  ? "Stop 才能切换模型"
+                  : "切换模型,下次 Start 生效"
+              }
+            >
+              {AVAILABLE_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            {!isRunning && !isStarting && (
+              <Button
+                onClick={handleStartAgent}
+                disabled={!port}
+                size="sm"
+                className="gap-2"
+              >
+                <Play className="h-4 w-4" />
+                Start
+              </Button>
+            )}
+            {isStarting && (
+              <Button disabled size="sm" className="gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Starting…
+              </Button>
+            )}
+            {isRunning && (
+              <Button
+                onClick={handleStopAgent}
+                variant="destructive"
+                size="sm"
+                className="gap-2"
+              >
+                <Square className="h-4 w-4" />
+                Stop
+              </Button>
+            )}
+            <AudioControls
+              isRecording={isRecording}
+              onStartRecording={startRecording}
+              onStopRecording={stopRecording}
+            />
+          </div>
+        </div>
+
+        {/* Error alert (only when present) */}
+        {(initError || agentState.error) && (
+          <div className="shrink-0 px-4 pt-3">
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Connection Error</AlertTitle>
+              <AlertDescription>
+                {initError || agentState.error}
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        {/* Main area: left column (avatar top / user cam bottom) | right column (chat) */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[minmax(260px,1fr)_2fr]">
+          {/* Left column — vertical stack */}
+          <div className="flex min-h-0 flex-col gap-3">
+            {/* Avatar (top) */}
+            <Card className="flex flex-1 flex-col overflow-hidden shadow-sm">
+              <CardContent className="flex-1 p-2">
+                <AvatarLive2D analyser={ttsAnalyser} />
+              </CardContent>
+            </Card>
+
+            {/* Mic visualizer strip */}
+            <div
+              className="relative overflow-hidden rounded-xl border border-border/30 bg-muted/30 ring-1 ring-border/40"
+              style={{ height: 40 }}
+            >
+              <AudioVisualizer
+                stream={getMediaStream()}
+                isActive={isRecording}
+                barCount={32}
+                barWidth={3}
+                barGap={2}
+                height={40}
+              />
             </div>
-            <ConnectionStatus />
+
+            {/* User camera (bottom) */}
+            <Card className="flex flex-1 flex-col overflow-hidden shadow-sm">
+              <CardContent className="flex-1 p-2">
+                <UserCamera />
+              </CardContent>
+            </Card>
           </div>
 
-          {/* Main Grid — 3 columns on lg: Connection | Avatar | Conversation */}
-          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
-            {/* Left column: Connection + Voice */}
-            <div className="lg:col-span-1">
-              <Card className="shadow-sm">
-                <CardHeader className="flex flex-row items-center justify-between gap-4">
-                  <div className="flex-1">
-                    <CardTitle className="flex items-center gap-2">
-                      <Wifi className="h-5 w-5" />
-                      Connection
-                    </CardTitle>
-                    <CardDescription>
-                      Start or stop the agent connection and interact with voice
-                    </CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!isRunning && !isStarting && (
-                      <Button
-                        onClick={handleStartAgent}
-                        disabled={!port}
-                        size="sm"
-                        className="gap-2"
-                      >
-                        <Play className="h-4 w-4" />
-                        Start
-                      </Button>
-                    )}
-                    {isStarting && (
-                      <Button disabled size="sm" className="gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Starting...
-                      </Button>
-                    )}
-                    {isRunning && (
-                      <Button
-                        onClick={handleStopAgent}
-                        variant="destructive"
-                        size="sm"
-                        className="gap-2"
-                      >
-                        <Square className="h-4 w-4" />
-                        Stop
-                      </Button>
-                    )}
-                    <AudioControls
-                      isRecording={isRecording}
-                      onStartRecording={handleStartRecording}
-                      onStopRecording={handleStopRecording}
-                    />
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4 pt-2">
-                  {(initError || agentState.error) && (
-                    <Alert variant="destructive">
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Connection Error</AlertTitle>
-                      <AlertDescription>
-                        {initError || agentState.error}
-                      </AlertDescription>
-                    </Alert>
-                  )}
-
-                  {/* Audio Visualizer */}
-                  <div
-                    className="relative overflow-hidden rounded-xl border border-border/30 bg-muted/30 p-0 ring-1 ring-border/40"
-                    style={{ height: 48 }}
-                  >
-                    <AudioVisualizer
-                      stream={getMediaStream()}
-                      isActive={isRecording}
-                      barCount={40}
-                      barWidth={4}
-                      barGap={2}
-                      height={48}
-                    />
-                  </div>
-
-                  {/* Status Text */}
-                  <div className="text-center">
-                    {isRunning && !wsConnected && (
-                      <div className="flex items-center justify-center gap-2 text-muted-foreground text-sm">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Connecting to WebSocket...</span>
-                      </div>
-                    )}
-                    {isRunning && wsConnected && !isRecording && (
-                      <p className="text-muted-foreground text-sm">
-                        Click the microphone to start speaking
-                      </p>
-                    )}
-                    {isRunning && wsConnected && isRecording && (
-                      <div className="flex items-center justify-center gap-2 text-sm text-white">
-                        <div className="h-2 w-2 animate-pulse rounded-full bg-white" />
-                        <span>Listening... Click to stop</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Live Transcription */}
-                  <TranscriptionDisplay />
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Middle column: Avatar */}
-            <Card className="shadow-sm lg:col-span-1">
-              <CardHeader>
-                <CardTitle>Avatar</CardTitle>
-                <CardDescription>
-                  小灵's face. Lips sync to the TTS audio stream.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="pt-2">
-                <div className="aspect-square w-full">
-                  <AvatarLive2D analyser={ttsAnalyser} />
+          {/* Right column — chat fills the whole area */}
+          <Card className="flex min-h-0 flex-col overflow-hidden shadow-sm">
+            <CardHeader className="shrink-0 pb-2">
+              <CardTitle className="text-base">Conversation</CardTitle>
+              {isRunning && wsConnected && (
+                <div className="text-muted-foreground text-xs">
+                  {isRecording ? "Listening…" : "Click the mic to speak"}
                 </div>
-              </CardContent>
-            </Card>
-
-            {/* Right column: Conversation */}
-            <Card className="shadow-sm lg:col-span-1">
-              <CardHeader>
-                <CardTitle>Conversation</CardTitle>
-                <CardDescription>
-                  View your conversation history with the AI assistant
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="pt-2">
+              )}
+              {isRunning && !wsConnected && (
+                <div className="flex items-center gap-2 text-muted-foreground text-xs">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Connecting…</span>
+                </div>
+              )}
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col gap-2 pb-3 pt-0">
+              <div className="min-h-0 flex-1 overflow-hidden">
                 <ChatHistory />
-              </CardContent>
-            </Card>
-          </div>
+              </div>
+              <TranscriptionDisplay />
+              {/* Text input — alternative to voice when mic isn't usable. */}
+              <div className="flex shrink-0 items-center gap-2 border-t border-border/30 pt-2">
+                <input
+                  type="text"
+                  value={textInput}
+                  onChange={(e) => setTextInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendTextMessage();
+                    }
+                  }}
+                  placeholder={
+                    wsConnected ? "输入消息,按回车发送…" : "先 Start 再输入"
+                  }
+                  disabled={!wsConnected}
+                  className="flex h-9 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <Button
+                  size="sm"
+                  onClick={sendTextMessage}
+                  disabled={!wsConnected || !textInput.trim()}
+                  className="gap-1"
+                >
+                  <Send className="h-4 w-4" />
+                  发送
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>

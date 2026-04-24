@@ -114,13 +114,23 @@ Base framework: [TEN Framework](https://github.com/TEN-framework/TEN-Agent)
 | `frontend/src/lib/audioUtils.ts` | PCM record/play + gap-free scheduling + downsample |
 | `frontend/src/lib/userIdentity.ts` | Anonymous per-browser UUID in localStorage (`xiaoling_uid`) |
 | `frontend/src/lib/persona.ts` | `PERSONA_PROMPT_BASE` + `buildPromptForUser(uid)` — source of truth for prompt (mirrored manually in property.json) |
+| `frontend/src/lib/availableModels.ts` | Curated 8-model dropdown list (Claude / GPT / Gemini) + `getSelectedModel()` / `setSelectedModel()` localStorage helpers |
 | `frontend/src/hooks/useAudioPlayer.ts` | Exposes `analyser` for avatar sync |
-| `frontend/src/hooks/useAgentLifecycle.ts` | `/start` call injects `properties.llm.prompt` override with UID marker |
+| `frontend/src/hooks/useAgentLifecycle.ts` | `/start` call injects `properties.llm.{prompt, model}` override (UID marker + selected model) |
 | `frontend/src/components/Agent/AvatarLive2D.tsx` | Live2D component (drives mouth param) |
-| `frontend/src/components/Agent/WebSocketClient.tsx` | Layout: 3 columns (Connect\|Avatar\|Chat) |
+| `frontend/src/components/Agent/UserCamera.tsx` | Local webcam preview (getUserMedia, not uploaded) |
+| `frontend/src/components/Agent/WebSocketClient.tsx` | Layout: top toolbar (title + model dropdown + Start/Stop + mic) + 2-col (avatar stacked w/ user cam \| chat with text input) |
 | `frontend/src/app/layout.tsx` | Loads `/lib/live2dcubismcore.min.js` |
 | `frontend/public/lib/live2dcubismcore.min.js` | Cubism Core SDK (local) |
 | `frontend/public/live2d/kei_vowels_pro/...` | Kei model files (local, not from AWS S3) |
+
+### TEN extension patches (small fork — DO NOT lose on container rebuild)
+The files below live inside the container at `/app/agents/ten_packages/extension/*` or `/app/agents/examples/websocket-example/tenapp/ten_packages/extension/*`. We keep mirror copies under `overlay/ten_packages_patches/` for recovery after container rebuild. Gotchas #18 and #19 explain why each is needed.
+
+| Patched path | What the patch adds |
+|---|---|
+| `websocket_server/websocket_server.py` + `extension.py` | Accept `{"text": "..."}` WS messages → emit synthetic `asr_result` data frame. Enables keyboard-input UI path without running STT. |
+| `openai_llm2_python/openai.py` (line ~441) | Treat empty-string `arguments` as `{}` when decoding streamed tool calls. Claude/Anthropic via OpenAI-compat gateways sends `""` for no-arg tools; vanilla code calls `json.loads("")` and crashes the whole LLM turn. |
 
 ---
 
@@ -131,7 +141,7 @@ Base framework: [TEN Framework](https://github.com/TEN-framework/TEN-Agent)
 
 | Role | Vendor | Key location | Notes |
 |---|---|---|---|
-| LLM | DeepSeek (OpenAI-compatible) | hardcoded in server's `property.json` (DeepSeek `sk-...`) | `base_url: https://api.deepseek.com/v1`, model `deepseek-chat` |
+| LLM | **gpt.ge gateway** (OpenAI-compatible) | hardcoded in server's `property.json` (gpt.ge `sk-Ab...`) | `base_url: https://api.gpt.ge/v1`. **One key, three vendors** — Claude / OpenAI / Gemini all routed via the same endpoint. Default model `claude-sonnet-4-6`. Frontend sends `properties.llm.model` per-session to swap. **Previous**: DeepSeek direct (deprecated 2026-04-25 — kept no fallback) |
 | STT | Aliyun Paraformer v2 (DashScope) | hardcoded in server's `property.json` (DashScope `sk-...`) | `language_hints: ["zh", "en"]` for code-switching |
 | TTS | Minimax WebSocket | hardcoded in server's `property.json` (Minimax `sk-api-...`) | model `speech-02-turbo`, voice `female-tianmei` |
 | Avatar | Live2D Kei (self-hosted) | n/a | Assets in `/public/live2d/` |
@@ -401,6 +411,57 @@ is duplicated between `frontend/src/lib/persona.ts` (live source) and
 `tenapp/property.json` (fallback for direct /start calls). Keep in sync
 manually until M2.3 centralizes.
 
+### #18 — Text-input path required patching `websocket_server` extension
+**Context**: Out of the box, the `websocket_server` extension only accepts
+messages shaped like `{"audio": "<base64 pcm>"}`. We needed a keyboard-input
+path (for the chat UI's send button) without running STT.
+
+**Fix**: Small patch inside two files of the extension:
+- `websocket_server/websocket_server.py` — `_process_message` also handles
+  `{"text": "..."}`, calls new `on_text_callback(text, client_id)`.
+- `websocket_server/extension.py` — new `_on_text_received` method emits a
+  synthetic `asr_result` data frame with `final=True`, so `main_control`
+  processes it exactly like STT output.
+
+Plus `property.json` lists `websocket_server` as an additional source of
+`asr_result` alongside `stt`. Mirror copy lives under
+`overlay/ten_packages_patches/websocket_server/` for re-application.
+
+**Gotcha about the fix**: The extension is **NOT** under the overlay's
+tenapp; it lives at `/app/agents/ten_packages/extension/websocket_server/`,
+which is inside the container image. If the container is rebuilt (e.g.
+`docker rm && docker run`), the patch is lost. `sync-from-mac.sh` already
+excludes this path from rsync. Need a step in `install.sh` to auto-apply
+the patch — tracked as a Post-MVP item.
+
+### #19 — Claude via OpenAI-compat gateway crashes vanilla `openai_llm2_python`
+**Symptom**: LLM error
+```
+RuntimeError: CreateChatCompletion failed, err: Expecting value: line 1 column 1 (char 0)
+```
+Happens ONLY when the LLM decides to call a no-argument tool like
+`get_current_time` or `get_lunar_date`.
+
+**Cause**: Anthropic models (via gpt.ge gateway) stream tool-call arguments
+as `arguments=""` (empty string) when the function takes no parameters.
+DeepSeek / OpenAI native send `arguments="{}"`. The extension at
+`tenapp/ten_packages/extension/openai_llm2_python/openai.py:441` does:
+```python
+arguements = json.loads(tool_call["function"]["arguments"])
+```
+`json.loads("")` raises JSONDecodeError and the whole streaming LLM turn
+is aborted — you never see the assistant's reply.
+
+**Fix**: Treat empty string as `{}`:
+```python
+raw_args = tool_call["function"].get("arguments") or ""
+raw_args = raw_args.strip()
+arguements = json.loads(raw_args) if raw_args else {}
+```
+Mirror copy lives under
+`overlay/ten_packages_patches/openai_llm2_python/openai.py`. Same container-
+rebuild risk as #18.
+
 ---
 
 ## 7. Known short-term issues / TODOs
@@ -410,14 +471,25 @@ manually until M2.3 centralizes.
 - [ ] `.env` placeholder values need to stay 32-char AGORA_APP_ID for the Go
       server validation. Proper fix would be patching `/app/server/main.go`
       line 53.
-- [ ] Frontend has no text-input fallback when mic permission is denied.
+- [x] ~~Frontend has no text-input fallback when mic permission is denied~~ —
+      done 2026-04-25: chat card has text input at bottom-right, hits the
+      `websocket_server` text-path (see Gotcha #18).
 - [x] ~~No persistent memory across sessions~~ — done 2026-04-24: per-user
       anonymous memory via `memory_mcp_server.py` + SQLite + frontend
       `localStorage` UUID. Still single-device only; cross-device sync needs
       phone/email binding (Post-MVP).
 - [ ] Kei avatar is one of the TEN framework's public demo models. If user
       wants a branded avatar, create custom Cubism 4 model and drop into
-      `public/live2d/<name>/`.
+      `public/live2d/<name>/`. M3.1 will produce the artist handoff spec.
+- [ ] **Container-rebuild risk for TEN patches (#18 + #19)**: two extension
+      patches live only inside the container, not in the overlay rsync.
+      `install.sh` needs a step that re-copies files from
+      `overlay/ten_packages_patches/` into the container paths.
+- [ ] Mobile/portrait layout: current UI is landscape-first. Phone browsers
+      work but chat area is cramped. Tracked as remaining part of M1.1.
+- [ ] Claude tool-calling is ~2-4s slower than DeepSeek because gpt.ge
+      forces serial tool calls (no native `parallel_tool_calls`). Could
+      patch `openai_llm2_python` to pass that flag, or accept as-is.
 
 ---
 

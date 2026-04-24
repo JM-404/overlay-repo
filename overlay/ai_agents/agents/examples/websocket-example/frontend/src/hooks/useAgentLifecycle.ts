@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ping } from "@/lib/api";
+import { getSelectedModel } from "@/lib/availableModels";
 import { buildPromptForUser } from "@/lib/persona";
 import { getUserId } from "@/lib/userIdentity";
 
@@ -125,8 +126,12 @@ export function useAgentLifecycle() {
               // prompt so memory tools can scope recall/remember per user
               // without requiring login. Kept out of channel_name to preserve
               // uniqueness across tabs/sessions of the same user.
+              // Also override `model` so the user's dropdown pick takes
+              // effect; base_url + api_key stay with the server's property
+              // so the gateway key is never exposed in frontend JS.
               llm: {
                 prompt: buildPromptForUser(getUserId()),
+                model: getSelectedModel(),
               },
             },
             timeout: timeout,
