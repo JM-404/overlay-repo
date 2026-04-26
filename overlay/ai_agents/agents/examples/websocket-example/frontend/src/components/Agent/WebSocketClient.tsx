@@ -1,12 +1,13 @@
 "use client";
 
 import { AlertCircle, Loader2, Play, Send, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AVAILABLE_MODELS,
   getSelectedModel,
   setSelectedModel,
 } from "@/lib/availableModels";
+import { buildTickPayload, readGreetOverride } from "@/lib/proactiveTick";
 import { AudioControls } from "@/components/Agent/AudioControls";
 import { AudioVisualizer } from "@/components/Agent/AudioVisualizer";
 import { AvatarLive2D } from "@/components/Agent/AvatarLive2D";
@@ -75,6 +76,30 @@ export function WebSocketClient() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startRecording]);
+
+  // Fire a proactive tick the moment the WebSocket connects so 小灵 opens
+  // first instead of waiting for the user to speak. The tick reason comes
+  // from the URL (?greet=morning|afternoon|evening|remind) when set, else
+  // defaults to user_just_arrived.
+  //
+  // Keyed on `channelName` (one new value per Start click) so that
+  // mid-session reconnects, React StrictMode double-effect-runs in dev,
+  // and any other wsConnected flip-flops do NOT re-trigger the greeting.
+  // Each Start = exactly one greeting, period.
+  const lastFiredChannelRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wsConnected || !wsManager) return;
+    const channel = agentState.channelName;
+    if (!channel) return;
+    if (lastFiredChannelRef.current === channel) return;
+    lastFiredChannelRef.current = channel;
+    const reason = readGreetOverride() ?? "user_just_arrived";
+    try {
+      wsManager.send(buildTickPayload(reason));
+    } catch (err) {
+      console.error("Failed to send proactive tick:", err);
+    }
+  }, [wsConnected, wsManager, agentState.channelName]);
 
   const handleStartAgent = async () => {
     if (!port) {
