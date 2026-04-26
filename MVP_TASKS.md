@@ -23,19 +23,17 @@
 
 ## 1. 里程碑 M1:基础能力升级(5-7 天)
 
-### 1.1 UI 改版 — ⚠️ 部分完成(横屏 ✅ / 竖屏 ❌)
+### 1.1 UI 改版 — ✅ 2026-04-26 上线(横屏 + 竖屏)
 - [x] 横屏(网页)重构:**左上数字人 + 左下用户摄像头 + 中间波形条 + 右侧聊天** 两栏布局
-- [x] 顶部薄工具栏:标题 + 连接状态 + 模型下拉 + Start/Stop + 麦克风开关
+- [x] 顶部薄工具栏:标题 + 连接状态 + Start/Stop + 麦克风开关 + 设置齿轮(M2.3 取代了原模型下拉)
 - [x] 聊天卡片底部文字输入框(回车/按钮发送)
 - [x] 新增 `UserCamera.tsx`(本地预览,`getUserMedia`,不上传)
-- [ ] **竖屏(手机浏览器)**:对话区默认占屏幕 1/3,点击自动展开 ← 还没做
-- [ ] 响应式断点用 `useMediaQuery` 判定 orientation ← 跟竖屏一起做
-- [ ] 过渡动画用 `framer-motion` 的 `AnimatePresence`
-- [ ] 窗口 resize 时 Live2D canvas 自动 `app.renderer.resize()`(M3.2 一起处理)
-- [ ] 右上角设置入口完整 drawer(现在只是模型下拉,完整版见 M2.3)
+- [x] **竖屏(手机浏览器)**:数字人占上半,用户摄像头 PiP 浮在右上角,聊天默认 33% 高度;点击聊天 header 或聚焦输入框自动展开到 78%
+- [x] 响应式判定:新建 `useIsPortrait` hook,`matchMedia('(orientation: portrait), (max-width: 1023px)')`,触发任一即用竖屏布局
+- [x] 过渡动画:用 Tailwind `transition-[flex-basis] duration-300 ease-out`,不引入 framer-motion(零依赖)
+- [ ] (Post-MVP)窗口 resize 时 Live2D canvas 自动 `app.renderer.resize()` — 切横竖屏时数字人 canvas 偶尔需要硬刷,可在 M3.2 一起处理
 
-**依赖**: 无  
-**剩余工期**: 1-2 天(只剩竖屏)
+**依赖**: 无
 
 ### 1.2 匿名 Memory 系统 — ✅ 2026-04-24 上线(含多用户)
 - [x] 前端 `frontend/src/lib/userIdentity.ts`:首次访问 `crypto.randomUUID()` 生成,写入 `localStorage['xiaoling_uid']`;隐身模式 fallback 到会话级临时 UID
@@ -70,11 +68,14 @@
 
 **依赖**: 和风天气 Key ✅ | 服务器 SSH ✅ | `lunar-python` 已装进容器
 
-### 1.4 PWA 壳 — 0.5 天
-- [ ] `public/manifest.json`:app name / icons / theme_color / start_url / display: standalone
-- [ ] 接入 `next-pwa` 生成 service worker
-- [ ] iOS Safari 适配 meta(`apple-mobile-web-app-capable` 等)
-- [ ] 验证:Mac Chrome "安装" / iOS Safari "添加到主屏"可用
+### 1.4 PWA 壳 — ✅ 2026-04-26 上线
+- [x] `public/manifest.webmanifest`:name + short_name + description + theme_color + display:standalone + 6 个 categories
+- [x] `public/icon.svg` + `public/icon-maskable.svg`:渐变深蓝底 + 白色"灵"字,Maskable 版本预留 80% 安全区
+- [x] `app/layout.tsx`:Next.js metadata + viewport,含 `appleWebApp` (iOS 全屏) / `applicationName` / `themeColor` / `viewportFit:cover`(刘海屏)
+- [x] HTML lang 改为 zh-CN,viewport `userScalable:false`(避免双指缩放破坏布局)
+- [x] 部署后验证 `manifest.webmanifest` + `icon.svg` 都返 200
+- [ ] (Post-MVP)Service Worker 离线缓存 — 暂不接 next-pwa 插件,网络用户可正常用,离线场景非 demo 必需
+- [ ] (Post-MVP)正式 PNG 图标(待美术品牌设计) — 当前 SVG 在 Chrome / Firefox / Edge 都好用;iOS 16+ 也支持 SVG apple-touch-icon
 
 **依赖**: 无
 
@@ -109,17 +110,17 @@
 **依赖**: gpt.ge API key ✅  
 **附带收益**: Claude 的 tool-use 纪律比 DeepSeek 好,之前"手滑多查""我来看看时间"这类话痨问题显著减轻
 
-### 2.3 设置面板填充 — ⚠️ 部分完成
-- [x] 切换模型 — 已做,作为顶部下拉而非侧边 drawer
-- [x] 声音开关 — 已做(麦克风 toggle)
-- [ ] 完整侧边 drawer(取代顶部散控件)
-- [ ] 自定义背景:预设 4-6 张 + 支持上传本地图
-- [ ] 切换角色下拉(对接 M3.2 Persona 结构,先占位)
-- [ ] 音量条(目前是音量 toggle,非渐变)
-- [ ] 配置持久化(模型已 localStorage,其他待加)
+### 2.3 设置面板填充 — ✅ 2026-04-26 上线
+- [x] 完整侧边 drawer:`SettingsDrawer.tsx` 从右侧滑入,Esc / backdrop 关闭,无新依赖(纯 Tailwind 实现)
+- [x] **模型** 下拉:从顶部工具栏挪进 drawer,8 个 gpt.ge 模型,运行时灰掉
+- [x] **音量** 滑条:0-100%,实时打通到 `AudioPlayer.setVolume()`(用现成的 GainNode)
+- [x] **背景** 7 个预设 + 自定义上传(localStorage 存 dataURL,4MB 上限,不上传服务器)
+  - default(默认深蓝)/ dawn / forest / ocean / dusk / night / warm
+- [x] **角色** 下拉占位 — 只有 Kei,等 M3.2 + 美术开放
+- [x] 统一 `localStorage['xiaoling_settings']` 存所有偏好(自定义背景的 dataURL 也在里面)
+- [x] 新建 `lib/settingsStore.ts` — 单 JSON blob + 自带 pub-sub,组件用 `useSettings()` 即可
 
-**依赖**: 2.2 ✅  
-**剩余工期**: 0.5-1 天
+**依赖**: M2.2 ✅
 
 ---
 
@@ -204,18 +205,18 @@
 
 ## 5. 工期总览 & 剩余任务(按优先级)
 
-| # | 任务 | 工期 | 备注 |
+| # | 任务 | 工期 | 状态 |
 |---|---|---|---|
-| ~~1~~ | ~~M3.1 Live2D 规格文档~~ | ~~0.5 天~~ | ✅ 2026-04-26 完成,**待 JM 发美术** |
-| ~~2~~ | ~~M2.1 主动陪伴~~ | ~~1-2 天~~ | ✅ 2026-04-26 上线(A+B+C 三件套) |
-| 3 | **M1.4 PWA 壳** | 0.5 天 | 性价比最高 |
-| 4 | **M1.1 竖屏布局**(手机) | 1-2 天 | 横屏已做 |
-| 5 | **M2.3 设置面板扩展** | 0.5-1 天 | 模型切换已做,加背景/角色/音量 |
-| 6 | **M3.2 Live2D 角色切换接口** | 1-2 天 | 等美术交付前可以先做 |
-| 7 | **M3.3 接入公司 Live2D** | 1 天 | 等美术交付 |
-| 附 | **演示脚本** | ✅ | [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) 完成 |
+| ~~1~~ | M3.1 Live2D 规格文档 | 0.5 天 | ✅ 04-26,**待 JM 发美术** |
+| ~~2~~ | M2.1 主动陪伴(A+B+C) | 1-2 天 | ✅ 04-26 |
+| ~~3~~ | M1.4 PWA 壳 | 0.5 天 | ✅ 04-26 |
+| ~~4~~ | M1.1 竖屏布局 | 1-2 天 | ✅ 04-26 |
+| ~~5~~ | M2.3 设置面板扩展 | 0.5-1 天 | ✅ 04-26 |
+| 6 | **M3.2 Live2D 角色切换接口** | 1-2 天 | ⏳ 可以先做接入层,等美术交付时一插即用 |
+| 7 | **M3.3 接入公司 Live2D** | 1 天 | ⏸️ 等美术交付 |
+| 附 | 演示脚本 | ✅ | [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) |
 
-**剩余总工期**: ~3-5 天主动开发 + 等美术(2-3 周并行)
+**主动开发只剩 M3.2(1-2 天),其余等美术 2-3 周。MVP 几乎收尾。**
 
 ---
 
@@ -235,6 +236,9 @@
 | 2026-04-26 | 主动陪伴改用"哨兵字符串 + 文本输入管道复用"而非"新 API + 按钮" | 避免再起新 endpoint,代码量更小,维护成本低;一次性拿到 A(进场)/ B(沉默)/ C(URL 模式)三种触发 |
 | 2026-04-26 | 沉默 watchdog 默认 45s,不是 60s | demo 时长不希望让人等太久;生产可以调高 |
 | 2026-04-26 | tick 不重置自己的 watchdog,只首次触发 | 防止小灵自我喂料形成 silence_60s 死循环 |
+| 2026-04-26 | PWA 用 SVG 图标不接 next-pwa 插件 | 节省一个依赖,SVG 在主流浏览器都好;PNG 等品牌 favicon 出来时一并替换;Service Worker 离线缓存非 demo 必需 |
+| 2026-04-26 | 响应式不引入 framer-motion | Tailwind transition 已经够顺,少一个 npm 依赖少一份维护成本 |
+| 2026-04-26 | 设置全部塞进单个 JSON blob (`xiaoling_settings`) | 比每个 setting 一个 storage key 干净;自定义背景的 dataURL 也在里面,4MB 内能塞 |
 
 ---
 
