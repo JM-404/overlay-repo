@@ -82,17 +82,17 @@
 
 ## 2. 里程碑 M2:陪伴 Demo(2-3 天)
 
-### 2.1 主动问候 Demo 按钮 — 1-2 天
-- [ ] 前端:右上角(或 `?demo=1` 才显示)加"演示主动问候"按钮
-- [ ] 后端新增 API `/proactive_greet?uid=xxx`
-  - [ ] 调 memory MCP 拉 profile
-  - [ ] 调 context MCP 拉 time/weather/lunar
-  - [ ] 组装特殊 prompt → 调 LLM 生成开场白
-  - [ ] 推回前端 WebSocket,走现有 TTS 播报
-- [ ] 话术调优:早上/下午/晚上/深夜 4 种时段的不同口吻
-- [ ] 记忆场景:已知用户偏好 vs 新用户的不同开场
+### 2.1 主动陪伴 — ✅ 2026-04-26 上线(三件套 A + B + C)
+**架构换了**:不走"按钮 + 新 API",改走"复用文本输入管道 + 哨兵字符串"思路,代码量更小、更干净。
+- [x] 新建 `frontend/src/lib/proactiveTick.ts`:`__PROACTIVE_TICK__:<reason>` 协议 + 6 种 reason
+- [x] **A. 进场即说**:WebSocket 连上自动发 `user_just_arrived` tick,小灵立刻调时间/记忆/天气工具,主动开口。`useEffect` 用 `channelName` 当 session 标识,reconnect 不会重发(避免之前观察到的"开场三连发" bug)
+- [x] **B. 沉默打破**(新 patch `main_python/extension.py`):asyncio watchdog,真用户输入重置;45s 无动静自动注入 `silence_60s` tick → 小灵主动追问"还在吗"。tick 自身不重置(避免自喂料死循环);on_stop 干净取消
+- [x] **C. URL `?greet=morning|afternoon|evening|remind`**:不同时段 demo 模式,前端读 query 决定 tick reason
+- [x] `useWebSocket.ts` 加过滤:`__PROACTIVE_TICK__` 不显示在用户气泡里
+- [x] persona prompt 教 LLM 6 种 reason 各自的语气,以及绝不复述 sentinel 字符串
+- [x] 端到端浏览器实测通过(包括沉默 45s 触发 watchdog 等)
 
-**依赖**: M1.2 memory + M1.3 context MCP 跑通
+**依赖**: M1.2 ✅ + M1.3 ✅ + websocket_server text patch ✅
 
 ### 2.2 多模型切换 — ✅ 2026-04-25 上线
 **换方案了**:不走多 graph,走 **gpt.ge 中转网关**(一个 base_url 支持三家模型,只改 `model` 字段)
@@ -125,15 +125,19 @@
 
 ## 3. 里程碑 M3:角色化(2-3 天 + 等模型)
 
-### 3.1 Live2D 交付规格文档 — 0.5 天
-- [ ] 写 `docs/LIVE2D_SPEC.md`,包含:
-  - [ ] Cubism 4 导出设置(纹理 ≤2048、精度、压缩)
-  - [ ] 标准参数命名表(ParamMouthOpenY / ParamEyeBlink* / ParamAngle* / 情绪类 ~15 项)
-  - [ ] 动作清单(Idle 循环 / Talk 叠加 / Greet / Nod,必备 4-5 条)
-  - [ ] 表情清单(可选 4-6 个,如 smile / shy / thinking)
-  - [ ] 物理配置要点(头发/衣服摆动)
-  - [ ] 交付文件目录结构
-- [ ] 发给美术/建模同事
+### 3.1 Live2D 交付规格文档 — ✅ 2026-04-26 完成
+- [x] [`docs/LIVE2D_SPEC.md`](docs/LIVE2D_SPEC.md) 完整 11 节
+  - Cubism 4/5 导出 + `.moc3` / `.model3.json` 强制
+  - 完整参数命名表(15 必备 + 4 可选情绪类),硬要求不可改名
+  - 4 条必备动作(idle / talk / greet / nod),含"idle 不含眨眼,talk 不含口型"等避坑约束
+  - 4 个可选表情清单
+  - 物理(physics3.json)推荐
+  - 纹理 / 性能上限(2048×2048,drawables<60)
+  - 美学方向参考
+  - 交付文件夹标准结构 + 命名约定
+  - 美术自查清单 + 期望工期(2-3 周)
+  - 我侧的接入承诺(收到 → 0.5 天 + 0.5 天调试)
+- [ ] **发给美术 / 建模同事**(留给 JM 操作)
 
 **依赖**: 无
 
@@ -202,15 +206,16 @@
 
 | # | 任务 | 工期 | 备注 |
 |---|---|---|---|
-| 1 | **M3.1 Live2D 规格文档** | 0.5 天 | 最先做,美术好并行开工 |
-| 2 | **M2.1 主动陪伴 Demo 按钮** | 1-2 天 | 老板要 demo |
+| ~~1~~ | ~~M3.1 Live2D 规格文档~~ | ~~0.5 天~~ | ✅ 2026-04-26 完成,**待 JM 发美术** |
+| ~~2~~ | ~~M2.1 主动陪伴~~ | ~~1-2 天~~ | ✅ 2026-04-26 上线(A+B+C 三件套) |
 | 3 | **M1.4 PWA 壳** | 0.5 天 | 性价比最高 |
 | 4 | **M1.1 竖屏布局**(手机) | 1-2 天 | 横屏已做 |
 | 5 | **M2.3 设置面板扩展** | 0.5-1 天 | 模型切换已做,加背景/角色/音量 |
-| 6 | **M3.2 Live2D 角色切换接口** | 1-2 天 | 等 #1 敲定后开始 |
+| 6 | **M3.2 Live2D 角色切换接口** | 1-2 天 | 等美术交付前可以先做 |
 | 7 | **M3.3 接入公司 Live2D** | 1 天 | 等美术交付 |
+| 附 | **演示脚本** | ✅ | [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) 完成 |
 
-**剩余总工期**: ~6-9 天(部分可并行)
+**剩余总工期**: ~3-5 天主动开发 + 等美术(2-3 周并行)
 
 ---
 
@@ -227,6 +232,9 @@
 | 2026-04-25 | LLM 改走 gpt.ge 中转网关,不搞多 graph | 一个 base_url 支持 Claude/OpenAI/Gemini,只需改 `model` 字段;Claude tool-use 纪律更好,捎带修复之前的"手滑多查"问题 |
 | 2026-04-25 | 文本输入路径:patch `websocket_server` 扩展接受 `{"text":"..."}`,转成合成 `asr_result` 事件 | MVP 不想再造一条通道;复用现有 ASR→main_control→LLM→TTS 管道。代价:维护两个 ten_packages 小 fork(记入 Gotcha #18/#19) |
 | 2026-04-25 | Prompt 约束收窄(no-emoji + 静默调工具 + 不重复调工具 + 不为自己道歉) | 从日志证据来看针对 DeepSeek 的话痨 / 重复 tool_call 问题;切 Claude 后这些规则更多是保险 |
+| 2026-04-26 | 主动陪伴改用"哨兵字符串 + 文本输入管道复用"而非"新 API + 按钮" | 避免再起新 endpoint,代码量更小,维护成本低;一次性拿到 A(进场)/ B(沉默)/ C(URL 模式)三种触发 |
+| 2026-04-26 | 沉默 watchdog 默认 45s,不是 60s | demo 时长不希望让人等太久;生产可以调高 |
+| 2026-04-26 | tick 不重置自己的 watchdog,只首次触发 | 防止小灵自我喂料形成 silence_60s 死循环 |
 
 ---
 
