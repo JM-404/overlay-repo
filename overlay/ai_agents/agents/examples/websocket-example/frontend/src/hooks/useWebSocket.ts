@@ -39,6 +39,8 @@ export function useWebSocket(options: UseWebSocketOptions | string) {
   const addMessage = useAgentStore((s) => s.addMessage);
   const setTranscribing = useAgentStore((s) => s.setTranscribing);
   const clearTranscribing = useAgentStore((s) => s.clearTranscribing);
+  const addToolCall = useAgentStore((s) => s.addToolCall);
+  const finishToolCall = useAgentStore((s) => s.finishToolCall);
 
   // Initialize WebSocket manager
   useEffect(() => {
@@ -140,6 +142,31 @@ export function useWebSocket(options: UseWebSocketOptions | string) {
         }
       }
 
+      // Handle MCP tool-call events emitted by main_python's llm_exec.
+      // Two data_type variants share the text_data channel:
+      //   "mcp_call"   — tool just got invoked; show "正在调 …" chip
+      //   "mcp_result" — tool returned; patch the chip with ok / error
+      if (
+        message.name === "text_data" &&
+        message.data?.data_type === "mcp_call"
+      ) {
+        const toolName = message.data?.tool_name || "";
+        if (toolName) {
+          addToolCall(toolName, message.data?.arguments);
+        }
+      }
+      if (
+        message.name === "text_data" &&
+        message.data?.data_type === "mcp_result"
+      ) {
+        const toolName = message.data?.tool_name || "";
+        if (toolName) {
+          const ok = message.data?.ok === false ? "error" : "ok";
+          const preview = String(message.data?.preview || "");
+          finishToolCall(toolName, ok, preview);
+        }
+      }
+
       // Handle other LLM text responses (non-transcribe)
       if (message.name === "llm_response" || message.name === "chat_message") {
         const text = message.data?.text || message.data?.content || "";
@@ -218,6 +245,8 @@ export function useWebSocket(options: UseWebSocketOptions | string) {
     addMessage,
     setTranscribing,
     clearTranscribing,
+    addToolCall,
+    finishToolCall,
   ]);
 
   // Manual connect function
