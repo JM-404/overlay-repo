@@ -1,6 +1,6 @@
 "use client";
 
-import { Settings, Upload, Volume2, VolumeX, X } from "lucide-react";
+import { Download, Settings, Upload, Volume2, VolumeX, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { AVAILABLE_MODELS } from "@/lib/availableModels";
@@ -228,6 +228,9 @@ export function SettingsDrawer({
               更多角色等公司美术交付后开放。
             </p>
           </section>
+
+          {/* Desktop app download (V0.1 preview) */}
+          <DesktopDownloadSection />
         </div>
 
         <div className="shrink-0 border-border/40 border-t px-4 py-3 text-muted-foreground text-xs">
@@ -235,5 +238,71 @@ export function SettingsDrawer({
         </div>
       </aside>
     </>
+  );
+}
+
+/**
+ * Desktop app download card (V0.1 preview, macOS Apple Silicon only for now).
+ * Detects platform via userAgent and shows the right CTA. Hidden inside the
+ * Tauri shell itself (no point downloading the desktop app from the desktop
+ * app).
+ */
+function DesktopDownloadSection() {
+  const [platform, setPlatform] = useState<"mac" | "win" | "other">("other");
+  const [isTauri, setIsTauri] = useState(false);
+
+  useEffect(() => {
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+    if (/Mac/i.test(ua)) setPlatform("mac");
+    else if (/Windows/i.test(ua)) setPlatform("win");
+    // Detect we're already inside the Tauri shell
+    const w = window as unknown as {
+      __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
+    };
+    setIsTauri(Boolean(w.__TAURI__ || w.__TAURI_INTERNALS__));
+  }, []);
+
+  if (isTauri) return null; // already in the desktop app
+
+  const macUrl = "/downloads/Xiaoling-mac.dmg";
+
+  return (
+    <section className="space-y-2">
+      <h3 className="font-medium text-foreground text-sm">桌面版</h3>
+      <div className="rounded-md border border-border/40 bg-muted/30 p-3 text-sm">
+        <p className="text-foreground">
+          下载小灵桌面版,体验额外能力:
+        </p>
+        <ul className="mt-1.5 ml-4 list-disc text-muted-foreground text-xs">
+          <li>语音读取本机文件、运行终端命令</li>
+          <li>独立窗口,不用开浏览器</li>
+        </ul>
+        {platform === "mac" ? (
+          <>
+            <a
+              href={macUrl}
+              download
+              className="mt-3 inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-primary-foreground text-sm transition-opacity hover:opacity-90"
+            >
+              <Download className="h-4 w-4" />
+              下载 macOS 版 (Apple Silicon)
+            </a>
+            <p className="mt-2 text-muted-foreground text-xs">
+              首次启动如提示"无法核实开发者",右键 .app → 打开 →
+              确认即可。Intel Mac / Windows 版本制作中。
+            </p>
+          </>
+        ) : platform === "win" ? (
+          <p className="mt-3 text-muted-foreground text-xs">
+            Windows 版本制作中,先用 Edge / Chrome 在网页上体验完整功能。
+          </p>
+        ) : (
+          <p className="mt-3 text-muted-foreground text-xs">
+            桌面版目前支持 macOS Apple Silicon。其他平台用浏览器即可。
+          </p>
+        )}
+      </div>
+    </section>
   );
 }

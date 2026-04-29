@@ -71,6 +71,14 @@ class LLMExec:
         # it doesn't always listen.
         self._tools_called_this_round: set[str] = set()
 
+        # Tools that are exempt from the per-round dedup. Use for tools the
+        # user drives directly — e.g. terminal commands and file reads in
+        # the desktop relay path, where calling the same tool multiple times
+        # ("list desktop, then list downloads, then read X") is the whole
+        # point. The dedup guard exists for tools the LLM tends to spam on
+        # its own (memory/lunar/etc.), not these.
+        self._tools_no_dedup: set[str] = {"read_file", "run_command"}
+
         # Phase 1 (xiaoling-desktop): tools whose execution is forwarded to
         # the connected WebSocket client (the Tauri shell on the user's
         # machine) instead of being dispatched to a server-side extension.
@@ -100,6 +108,41 @@ class LLMExec:
                             "starting with ~/"
                         ),
                         required=True,
+                    ),
+                ],
+            ),
+            LLMToolMetadata(
+                name="run_command",
+                description=(
+                    "Run a shell command on the user's local computer. "
+                    "Returns combined stdout and stderr (truncated to ~5KB). "
+                    "Has a 30 second timeout. Use ONLY when the user "
+                    "explicitly asks to run, execute, or check something via "
+                    "the terminal — e.g. 'list my desktop files', 'check git "
+                    "status', 'show running processes', 'what's the date'. "
+                    "Do NOT chain into destructive commands (rm, mv, kill, "
+                    "sudo) without the user spelling them out clearly. Only "
+                    "available when the user is running the xiaoling desktop "
+                    "app."
+                ),
+                parameters=[
+                    LLMToolMetadataParameter(
+                        name="command",
+                        type="string",
+                        description=(
+                            "The shell command to run, e.g. 'ls -la "
+                            "~/Desktop' or 'date' or 'git status'"
+                        ),
+                        required=True,
+                    ),
+                    LLMToolMetadataParameter(
+                        name="cwd",
+                        type="string",
+                        description=(
+                            "Optional working directory; defaults to the "
+                            "user's home. Accepts ~/ prefix."
+                        ),
+                        required=False,
                     ),
                 ],
             ),
@@ -272,9 +315,14 @@ class LLMExec:
                 # greeting text. We swallow these silently — the user sees
                 # only the first reply, the model's internal flailing stays
                 # in the logs.
+                #
+                # Exception: tools in `_tools_no_dedup` (read_file,
+                # run_command) — those are user-driven and chaining is the
+                # whole point. Don't block.
                 if (
                     src_extension_name
                     and llm_output.name in self._tools_called_this_round
+                    and llm_output.name not in self._tools_no_dedup
                 ):
                     self.ten_env.log_warn(
                         f"duplicate tool call '{llm_output.name}' in same round — "

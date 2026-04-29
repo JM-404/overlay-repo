@@ -29,7 +29,7 @@ from .websocket_server import WebSocketServerManager, AudioData
 # its in-process tool registry with source="websocket_server", so the existing
 # tool dispatch path lands here. We then proxy the call out over the WS, wait
 # for the client's `client_tool_call_result`, and return it as the cmd result.
-CLIENT_RELAY_TOOLS = {"read_file"}
+CLIENT_RELAY_TOOLS = {"read_file", "run_command"}
 RELAY_TIMEOUT_SEC = 30.0
 
 
