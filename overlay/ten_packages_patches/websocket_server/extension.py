@@ -3,6 +3,7 @@
 # Licensed under the Apache License, Version 2.0.
 # See the LICENSE file for more information.
 #
+import asyncio
 import json
 import time
 import uuid
@@ -18,9 +19,18 @@ from ten_runtime import (
     Data,
     AudioFrameDataFmt,
 )
+from ten_ai_base.const import CMD_PROPERTY_RESULT
 
 from .config import WebSocketServerConfig
 from .websocket_server import WebSocketServerManager, AudioData
+
+# Phase 1 (xiaoling-desktop relay): tools whose execution is forwarded to the
+# connected client via WebSocket. The server-side LLMExec registers these in
+# its in-process tool registry with source="websocket_server", so the existing
+# tool dispatch path lands here. We then proxy the call out over the WS, wait
+# for the client's `client_tool_call_result`, and return it as the cmd result.
+CLIENT_RELAY_TOOLS = {"read_file"}
+RELAY_TIMEOUT_SEC = 30.0
 
 
 class WebsocketServerExtension(AsyncExtension):
@@ -31,6 +41,8 @@ class WebsocketServerExtension(AsyncExtension):
         self.dump_file = None
         self.dump_bytes_written = 0
         self.ten_env: AsyncTenEnv = None
+        # Pending relay calls keyed by request id.
+        self._pending_relays: dict[str, asyncio.Future] = {}
 
     async def on_init(self, ten_env: AsyncTenEnv) -> None:
         # Store ten_env for later use
@@ -72,6 +84,7 @@ class WebsocketServerExtension(AsyncExtension):
                 ten_env=ten_env,
                 on_audio_callback=self._on_audio_received,
                 on_text_callback=self._on_text_received,
+                on_relay_result_callback=self._on_relay_result_received,
             )
             await self.ws_server.start()
             ten_env.log_info(
@@ -110,6 +123,41 @@ class WebsocketServerExtension(AsyncExtension):
         cmd_name = cmd.get_name()
         ten_env.log_debug(f"Received command: {cmd_name}")
 
+        # Phase 1 relay: tool_call cmds for client-side tools are forwarded
+        # to the connected WS client (the Tauri shell), which executes them
+        # against the local MCP sidecar and replies. We block here until the
+        # reply arrives or we time out.
+        if cmd_name == "tool_call":
+            try:
+                payload_json, _ = cmd.get_property_to_json(None)
+                payload = json.loads(payload_json) if payload_json else {}
+                tool_name = payload.get("name")
+                arguments = payload.get("arguments") or {}
+                if tool_name in CLIENT_RELAY_TOOLS:
+                    llm_result = await self._relay_tool_call_to_client(
+                        tool_name, arguments
+                    )
+                    cmd_result = CmdResult.create(StatusCode.OK, cmd)
+                    cmd_result.set_property_from_json(
+                        CMD_PROPERTY_RESULT, json.dumps(llm_result)
+                    )
+                    await ten_env.return_result(cmd_result)
+                    return
+            except Exception as exc:  # noqa: BLE001
+                ten_env.log_error(f"relay tool_call failed: {exc}")
+                err_result = {
+                    "type": "llmresult",
+                    "content": f"Local tool relay failed: {exc}",
+                }
+                cmd_result = CmdResult.create(StatusCode.OK, cmd)
+                cmd_result.set_property_from_json(
+                    CMD_PROPERTY_RESULT, json.dumps(err_result)
+                )
+                await ten_env.return_result(cmd_result)
+                return
+            # Fall through for non-relay tool_calls (none expected today, but
+            # be safe and let the generic broadcast path run).
+
         try:
             # Convert command to JSON
             cmd_json = cmd.to_json()
@@ -131,6 +179,92 @@ class WebsocketServerExtension(AsyncExtension):
         # Return success
         cmd_result = CmdResult.create(StatusCode.OK, cmd)
         await ten_env.return_result(cmd_result)
+
+    async def _relay_tool_call_to_client(
+        self, tool: str, args: dict
+    ) -> dict:
+        """Send a `client_tool_call` over the WS and await the reply.
+
+        Returns an `LLMToolResult`-shaped dict (`{type: "llmresult", content}`)
+        suitable for the existing dispatch loop in `llm_exec.py`.
+        """
+        if not self.ws_server:
+            return {
+                "type": "llmresult",
+                "content": "WebSocket server not running; cannot relay tool call.",
+            }
+
+        request_id = uuid.uuid4().hex
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_relays[request_id] = future
+
+        message = {
+            "type": "cmd",
+            "name": "client_tool_call",
+            "data": {"id": request_id, "tool": tool, "args": args},
+        }
+        try:
+            await self.ws_server.broadcast(message)
+            self.ten_env.log_info(
+                f"relay → {tool} (id={request_id[:8]}) args={args}"
+            )
+        except Exception:
+            self._pending_relays.pop(request_id, None)
+            raise
+
+        try:
+            mcp_result = await asyncio.wait_for(
+                future, timeout=RELAY_TIMEOUT_SEC
+            )
+        except asyncio.TimeoutError:
+            self._pending_relays.pop(request_id, None)
+            return {
+                "type": "llmresult",
+                "content": (
+                    f"Local tool '{tool}' timed out after "
+                    f"{int(RELAY_TIMEOUT_SEC)}s. The desktop app may not be "
+                    f"running, or the user did not approve the call."
+                ),
+            }
+
+        # mcp_result shape (from frontend bridge):
+        #   { ok: bool, content?: [{type, text}], isError?: bool, error?: str }
+        text_parts: list[str] = []
+        for block in (mcp_result.get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                t = block.get("text")
+                if isinstance(t, str):
+                    text_parts.append(t)
+        if not text_parts and mcp_result.get("error"):
+            text_parts.append(str(mcp_result["error"]))
+
+        text = "\n".join(text_parts) if text_parts else json.dumps(mcp_result)
+        if mcp_result.get("isError") or not mcp_result.get("ok", True):
+            text = f"Error from local tool: {text}"
+
+        self.ten_env.log_info(
+            f"relay ← {tool} (id={request_id[:8]}) {len(text)} chars"
+        )
+        return {"type": "llmresult", "content": text}
+
+    async def _on_relay_result_received(self, data: dict) -> None:
+        """Callback fired by WebSocketServerManager when a client posts a
+        `client_tool_call_result` message. Resolves the matching future."""
+        request_id = data.get("id")
+        if not request_id:
+            self.ten_env.log_warn(
+                f"client_tool_call_result without id: {data}"
+            )
+            return
+        future = self._pending_relays.pop(request_id, None)
+        if future is None:
+            self.ten_env.log_warn(
+                f"client_tool_call_result for unknown id {request_id[:8]}"
+            )
+            return
+        if not future.done():
+            future.set_result(data)
 
     async def on_data(self, ten_env: AsyncTenEnv, data: Data) -> None:
         """

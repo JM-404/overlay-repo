@@ -30,6 +30,7 @@ class WebSocketServerManager:
         ten_env: AsyncTenEnv,
         on_audio_callback: Optional[Callable[[AudioData], None]] = None,
         on_text_callback: Optional[Callable[[str, str], None]] = None,
+        on_relay_result_callback: Optional[Callable[[dict], Any]] = None,
     ):
         """
         Initialize WebSocket server manager
@@ -43,12 +44,16 @@ class WebSocketServerManager:
                 is received from the client. Used for the text-input UI
                 path that bypasses STT — the extension turns these into
                 synthetic asr_result events.
+            on_relay_result_callback: Callback(payload_dict) fired when the
+                client posts a `client_tool_call_result` cmd in reply to a
+                relayed tool call. Used by the Phase 1 desktop relay path.
         """
         self.host = host
         self.port = port
         self.ten_env = ten_env
         self.on_audio_callback = on_audio_callback
         self.on_text_callback = on_text_callback
+        self.on_relay_result_callback = on_relay_result_callback
 
         self.server = None
         self.current_client: Optional[Any] = None
@@ -159,6 +164,26 @@ class WebSocketServerManager:
         try:
             # Parse JSON message
             data = json.loads(message)
+
+            # Phase 1 relay path: client posts back a tool result after the
+            # server-side LLMExec asked it to run a local tool. Hand off to
+            # the extension via callback; nothing else to do here.
+            if (
+                isinstance(data, dict)
+                and data.get("type") == "cmd"
+                and data.get("name") == "client_tool_call_result"
+            ):
+                payload = data.get("data") or {}
+                if self.on_relay_result_callback:
+                    try:
+                        result = self.on_relay_result_callback(payload)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as e:
+                        self.ten_env.log_error(
+                            f"Error in relay result callback: {e}"
+                        )
+                return
 
             # Text-input path: if the client sends {"text": "…"}, treat it as
             # if ASR just produced a final transcript. Lets the UI ship a

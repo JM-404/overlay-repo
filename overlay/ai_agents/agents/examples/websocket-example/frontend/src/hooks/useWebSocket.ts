@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { WebSocketManager } from "@/manager/websocket";
 import { isProactiveTick } from "@/lib/proactiveTick";
 import { useAgentStore } from "@/store/agentStore";
+import { isTauri, callLocalTool } from "@/lib/tauriBridge";
 
 interface UseWebSocketOptions {
   url: string;
@@ -152,8 +153,44 @@ export function useWebSocket(options: UseWebSocketOptions | string) {
     });
 
     // Handle command messages
-    wsManager.onCmd((message) => {
+    wsManager.onCmd(async (message) => {
       console.log("Received command:", message.name, message.data);
+
+      // Tool-call relay: when running inside the xiaoling-desktop Tauri
+      // shell, the backend may request a tool be executed *locally* on the
+      // user's machine (terminal, file access, etc.). We forward the call
+      // to the local MCP sidecar via Tauri IPC and reply through the same
+      // socket. In a normal browser session this branch is a no-op.
+      if (message.name === "client_tool_call" && isTauri()) {
+        const payload = message.data as
+          | { id?: string; tool?: string; args?: Record<string, unknown> }
+          | undefined;
+        const id = payload?.id ?? "unknown";
+        const tool = payload?.tool;
+        const args = payload?.args ?? {};
+        if (!tool) {
+          wsManager.send({
+            type: "cmd",
+            name: "client_tool_call_result",
+            data: { id, ok: false, error: "missing tool name" },
+          });
+          return;
+        }
+        try {
+          const result = await callLocalTool(tool, args);
+          wsManager.send({
+            type: "cmd",
+            name: "client_tool_call_result",
+            data: { id, ...result },
+          });
+        } catch (err) {
+          wsManager.send({
+            type: "cmd",
+            name: "client_tool_call_result",
+            data: { id, ok: false, error: String(err) },
+          });
+        }
+      }
     });
 
     // Handle error messages
